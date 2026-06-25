@@ -8,6 +8,7 @@ try:
     import streamlit as st
 
     from resource_core import OPENROUTER_API_KEY, AVAILABLE_MODELS, ResourceMonitor, snapshot_to_text, ask_llm
+    from resource_advisor_command import parse_actions, execute_action
 except ImportError as e:
     print(f"ImportError: {e}. Running patch to install missing modules...")
     subprocess.check_call([sys.executable, os.path.join(os.path.dirname(__file__), "patch.py")])
@@ -155,6 +156,20 @@ run_auto_analysis()
 
 if st.session_state.last_analysis:
     st.markdown(st.session_state.last_analysis)
+    
+    actions = parse_actions(st.session_state.last_analysis)
+    if actions:
+        st.warning("⚠️ AI가 시스템 조치를 제안했습니다. 시스템에 직접적인 영향을 줄 수 있으므로 신중히 확인 후 승인해 주세요.")
+        for act in actions:
+            st.write(f"- **[{act['type']}]** {act['target']}")
+            
+        if st.button("제안된 조치 실행 승인", type="primary"):
+            for act in actions:
+                success, msg = execute_action(act["type"], act["target"])
+                if success:
+                    st.success(msg)
+                else:
+                    st.error(msg)
 else:
     st.info("‘지금 분석하기’ 버튼을 누르거나 자동 분석을 켜면 AI 조언이 여기에 표시됩니다.")
 

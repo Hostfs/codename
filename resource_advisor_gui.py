@@ -9,8 +9,10 @@ try:
     from tkinter import ttk
 
     import customtkinter as ctk
+    import tkinter.messagebox as messagebox
 
     from resource_core import OPENROUTER_API_KEY, AVAILABLE_MODELS, ResourceMonitor, snapshot_to_text, ask_llm
+    from resource_advisor_command import parse_actions, execute_action
 except ImportError as e:
     print(f"ImportError: {e}. Running patch to install missing modules...")
     subprocess.check_call([sys.executable, os.path.join(os.path.dirname(__file__), "patch.py")])
@@ -164,6 +166,12 @@ class ResourceAdvisorApp(ctk.CTk):
         self.analysis_box.grid(row=7, column=0, columnspan=2, sticky="nsew", padx=15, pady=(0, 15))
         self.analysis_box.insert("1.0", "‘지금 분석하기’ 버튼을 누르거나 자동 분석을 켜면 AI 조언이 여기에 표시됩니다.")
         self.analysis_box.configure(state="disabled")
+        
+        self.action_button = ctk.CTkButton(
+            main, text="AI 제안 조치 실행하기", fg_color="#C0392B", hover_color="#922B21",
+            command=self._execute_pending_actions
+        )
+        self.pending_actions = []
 
     def _make_process_table(self, parent, title):
         frame = ctk.CTkFrame(parent)
@@ -343,10 +351,37 @@ class ResourceAdvisorApp(ctk.CTk):
         self.analyze_button.configure(state="normal")
         self._set_status("", "gray")
 
+        self.pending_actions = parse_actions(result)
+
         self.analysis_box.configure(state="normal")
         self.analysis_box.delete("1.0", "end")
         self.analysis_box.insert("1.0", result)
         self.analysis_box.configure(state="disabled")
+        
+        if self.pending_actions:
+            self.action_button.grid(row=8, column=0, columnspan=2, sticky="ew", padx=15, pady=(0, 15))
+        else:
+            self.action_button.grid_forget()
+
+    def _execute_pending_actions(self):
+        if not self.pending_actions:
+            return
+            
+        msg = "다음 명령을 실행하시겠습니까?\n\n"
+        for act in self.pending_actions:
+            msg += f"- [{act['type']}] {act['target']}\n"
+            
+        msg += "\n※ 시스템에 직접적인 영향을 줄 수 있으므로 신중히 확인 후 승인해 주세요."
+        
+        if messagebox.askyesno("AI 조치 실행 승인", msg):
+            results = []
+            for act in self.pending_actions:
+                success, output = execute_action(act["type"], act["target"])
+                results.append(f"{'✅ 성공' if success else '❌ 실패'}: {output}")
+            
+            messagebox.showinfo("실행 결과", "\n".join(results))
+            self.pending_actions = []
+            self.action_button.grid_forget()
 
     def _set_status(self, text, color):
         self.status_label.configure(text=text, text_color=color)
