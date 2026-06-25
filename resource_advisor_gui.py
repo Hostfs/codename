@@ -3,7 +3,63 @@ resource_advisor_gui.py  –  PyQt6 기반 시스템 자원 AI 어드바이저
 """
 from __future__ import annotations
 
+import importlib.util
+import subprocess
 import sys
+
+
+# ─────────────────────────────────────────────────────────────
+# 의존성 자동 설치 (python resource_advisor_gui.py 만으로 바로 실행되게)
+#
+# 무거운 서드파티 import(아래 PyQt6 등)보다 먼저 실행되어, 없는 라이브러리를
+# 현재 파이썬 환경에 pip로 설치한다. (import 이름, pip 패키지 이름)이 다른
+# 경우가 있어 매핑으로 관리한다.
+# ─────────────────────────────────────────────────────────────
+def _ensure_dependencies():
+    # (import으로 확인할 이름, pip 설치 이름, 필수 여부)
+    deps = [
+        ("PyQt6", "PyQt6", True),
+        ("psutil", "psutil", True),
+        ("dotenv", "python-dotenv", True),
+        ("openai", "openai", True),
+        ("win32pdh", "pywin32", False),   # 전력/GPU 사용률(PDH)
+        ("wmi", "wmi", False),            # LibreHardwareMonitor 센서
+        ("pynvml", "nvidia-ml-py", False),  # NVIDIA GPU
+        ("send2trash", "Send2Trash", False),  # 파일을 휴지통으로
+    ]
+
+    # PyInstaller 등으로 패키징된 실행 파일에서는 pip을 쓰지 않는다.
+    if getattr(sys, "frozen", False):
+        return
+
+    missing = [(imp, pip, req) for imp, pip, req in deps
+               if importlib.util.find_spec(imp) is None]
+    if not missing:
+        return
+
+    pkgs = ", ".join(pip for _, pip, _ in missing)
+    print(f"[설정] 필요한 라이브러리를 설치합니다: {pkgs}")
+    for imp, pip, req in missing:
+        print(f"  - {pip} 설치 중...", flush=True)
+        try:
+            subprocess.check_call(
+                [sys.executable, "-m", "pip", "install", "--disable-pip-version-check", pip]
+            )
+        except Exception as e:
+            msg = f"  ! {pip} 설치 실패: {e}"
+            if req:
+                print(msg)
+                print(f"수동으로 설치해 주세요:  {sys.executable} -m pip install {pip}")
+                sys.exit(1)
+            else:
+                print(msg + " (선택 기능이라 계속 진행합니다)")
+    # 새로 설치된 패키지를 import 시스템이 인식하도록 캐시를 갱신한다.
+    importlib.invalidate_caches()
+
+
+_ensure_dependencies()
+
+
 import time
 
 import psutil
