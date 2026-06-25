@@ -8,7 +8,8 @@ def install_modules():
         "customtkinter",
         "psutil",
         "python-dotenv",
-        "openai"
+        "openai",
+        "win11toast"
     ]
     for module in modules:
         try:

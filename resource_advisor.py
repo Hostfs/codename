@@ -1,178 +1,110 @@
-import sys
 import os
+import sys
+import json
+import time
 import subprocess
+import pandas as pd
 
 try:
-    import time
-
     import streamlit as st
-
-    from resource_core import OPENROUTER_API_KEY, AVAILABLE_MODELS, ResourceMonitor, snapshot_to_text, ask_llm
-    from resource_advisor_command import parse_actions, execute_action
+    from resource_advisor_command import execute_action
 except ImportError as e:
     print(f"ImportError: {e}. Running patch to install missing modules...")
     subprocess.check_call([sys.executable, os.path.join(os.path.dirname(__file__), "patch.py")])
-    print("Restarting application...")
     os.execl(sys.executable, sys.executable, *sys.argv)
 
-# =========================================================
-# 1. 페이지 / 세션 상태 초기화
-# =========================================================
-st.set_page_config(
-    page_title="시스템 자원 AI 어드바이저",
-    page_icon="🖥️",
-    layout="wide"
-)
+STATE_FILE = "shared_state.json"
 
-if "monitor" not in st.session_state:
-    st.session_state.monitor = ResourceMonitor()
+st.set_page_config(page_title="시스템 자원 AI 어드바이저", page_icon="🖥️", layout="wide")
 
-if "last_snapshot" not in st.session_state:
-    st.session_state.last_snapshot = None
+def load_state():
+    if not os.path.exists(STATE_FILE):
+        return None
+    try:
+        with open(STATE_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return None
 
-if "last_analysis" not in st.session_state:
-    st.session_state.last_analysis = None
+state = load_state()
 
-if "last_analysis_time" not in st.session_state:
-    st.session_state.last_analysis_time = 0.0
-
-# =========================================================
-# 2. 사이드바
-# =========================================================
-with st.sidebar:
-    st.title("⚙️ 설정")
-
-    selected_model = st.selectbox("사용 모델", AVAILABLE_MODELS)
-
-    temperature = st.slider("Temperature", 0.0, 1.0, 0.3, 0.1)
-
-    refresh_interval = st.slider(
-        "대시보드 새로고침 주기 (초)", 1, 30, 1,
-        help="CPU/RAM/GPU 수치를 갱신하는 주기입니다."
-    )
-
-    st.divider()
-
-    auto_analyze = st.toggle("AI 자동 분석", value=False)
-
-    analysis_interval = st.slider(
-        "AI 분석 주기 (초)", 30, 600, 60, 30,
-        help="자동 분석 시 LLM을 호출하는 주기입니다. API 비용이 발생하므로 너무 짧게 설정하지 마세요.",
-        disabled=not auto_analyze
-    )
-
-    manual_analyze = st.button("지금 분석하기", width="stretch", type="primary")
-
-    st.caption("OpenRouter API를 사용하므로 분석 요청마다 비용이 발생할 수 있습니다.")
+if not state:
+    st.warning("백그라운드 워커(`background_worker.py`)가 실행되지 않았거나 데이터를 수집 중입니다. 터미널에서 워커를 실행해 주세요.")
+    if st.button("새로고침"):
+        st.rerun()
+    st.stop()
 
 # =========================================================
-# 3. 대시보드 (주기적 갱신)
+# 화면 헤더
 # =========================================================
 st.title("🖥️ 시스템 자원 AI 어드바이저")
-st.caption("CPU / RAM / GPU / 디스크 사용량을 실시간으로 확인하고 AI에게 최적화 조언을 받습니다.")
+st.caption(f"마지막 갱신: {state.get('last_update_str', '알 수 없음')}")
 
-
-@st.fragment(run_every=refresh_interval)
-def show_dashboard():
-    snap = st.session_state.monitor.get_snapshot()
-    st.session_state.last_snapshot = snap
-
-    st.caption(f"마지막 갱신: {snap['timestamp']}")
-
-    col1, col2 = st.columns(2)
-    col1.metric("CPU 사용률", f"{snap['cpu_percent']:.1f}%")
-    col2.metric("RAM 사용률", f"{snap['mem_percent']:.1f}%", f"{snap['mem_used_gb']:.1f} / {snap['mem_total_gb']:.1f} GB")
-
-    st.markdown("##### 디스크")
-    disk_cols = st.columns(len(snap["disks"]) or 1)
-    for c, d in zip(disk_cols, snap["disks"]):
-        c.metric(d["mount"], f"{d['percent']:.1f}%", f"{d['used_gb']:.1f} / {d['total_gb']:.1f} GB")
-
-    st.markdown("##### GPU")
-    if snap["gpus"]:
-        gpu_cols = st.columns(len(snap["gpus"]))
-        for c, g in zip(gpu_cols, snap["gpus"]):
-            if g.get("static_only"):
-                c.metric(g["name"], "감지됨", f"VRAM: {g['mem_total_mb']:.0f} MB")
-            else:
-                c.metric(g["name"], f"{g['util_percent']:.0f}%", f"{g['mem_used_mb']:.0f} / {g['mem_total_mb']:.0f} MB, {g['temp_c']:.0f}C")
-    else:
-        st.info("GPU 정보를 가져올 수 없습니다.")
-
-    col_cpu, col_mem = st.columns(2)
-    with col_cpu:
-        st.markdown("###### CPU 사용량 상위 프로세스")
-        st.dataframe(snap["top_cpu"], hide_index=True, width="stretch")
-    with col_mem:
-        st.markdown("###### 메모리 사용량 상위 프로세스")
-        st.dataframe(snap["top_mem"], hide_index=True, width="stretch")
-
-
-show_dashboard()
+col1, col2 = st.columns([1, 10])
+with col1:
+    if st.button("🔄 새로고침"):
+        st.rerun()
 
 st.divider()
 
 # =========================================================
-# 4. AI 분석 (자동 주기 또는 수동 버튼)
+# AI 조치 승인 UI (가장 상단 배치)
 # =========================================================
-st.subheader("🤖 AI 분석")
-
-
-@st.fragment(run_every=analysis_interval if auto_analyze else None)
-def run_auto_analysis():
-    if not auto_analyze:
-        return
-    now = time.time()
-    if now - st.session_state.last_analysis_time < analysis_interval - 1:
-        return
-    if st.session_state.last_snapshot is None:
-        return
-
-    with st.spinner("AI가 자원 사용 현황을 분석하고 있습니다..."):
-        try:
-            text = snapshot_to_text(st.session_state.last_snapshot)
-            st.session_state.last_analysis = ask_llm(text, selected_model, temperature)
-            st.session_state.last_analysis_time = now
-        except Exception as e:
-            st.session_state.last_analysis = f"분석 중 오류가 발생했습니다: {e}"
-
-
-if manual_analyze:
-    if not OPENROUTER_API_KEY:
-        st.error(".env 파일에 OPENROUTER_API_KEY가 설정되어 있지 않습니다.")
-    elif st.session_state.last_snapshot is None:
-        st.warning("아직 수집된 자원 데이터가 없습니다. 잠시 후 다시 시도하세요.")
-    else:
-        with st.spinner("AI가 자원 사용 현황을 분석하고 있습니다..."):
-            try:
-                text = snapshot_to_text(st.session_state.last_snapshot)
-                st.session_state.last_analysis = ask_llm(text, selected_model, temperature)
-                st.session_state.last_analysis_time = time.time()
-            except Exception as e:
-                st.error("API 호출 중 오류가 발생했습니다.")
-                st.code(str(e))
-
-run_auto_analysis()
-
-if st.session_state.last_analysis:
-    st.markdown(st.session_state.last_analysis)
+pending_actions = state.get("pending_actions", [])
+if pending_actions:
+    st.error("⚠️ AI가 시스템 최적화를 위한 조치를 제안했습니다. 신중히 확인 후 승인해 주세요.")
     
-    actions = parse_actions(st.session_state.last_analysis)
-    if actions:
-        st.warning("⚠️ AI가 시스템 조치를 제안했습니다. 시스템에 직접적인 영향을 줄 수 있으므로 신중히 확인 후 승인해 주세요.")
-        for act in actions:
-            st.write(f"- **[{act['type']}]** {act['target']}")
-            
-        if st.button("제안된 조치 실행 승인", type="primary"):
-            for act in actions:
-                success, msg = execute_action(act["type"], act["target"])
-                if success:
-                    st.success(msg)
-                else:
-                    st.error(msg)
-else:
-    st.info("‘지금 분석하기’ 버튼을 누르거나 자동 분석을 켜면 AI 조언이 여기에 표시됩니다.")
+    for act in pending_actions:
+        st.markdown(f"- **[{act['type']}]** `{act['target']}`")
+        
+    if st.button("🚨 제안된 조치 실행 승인", type="primary"):
+        for act in pending_actions:
+            success, msg = execute_action(act["type"], act["target"])
+            if success:
+                st.success(f"{act['target']}: {msg}")
+            else:
+                st.error(f"{act['target']} 실패: {msg}")
+        
+        # 실행 후 알림이 계속 뜨는 것을 방지하기 위해 state 임시 비우기
+        state["pending_actions"] = []
+        try:
+            with open(STATE_FILE, "w", encoding="utf-8") as f:
+                json.dump(state, f, ensure_ascii=False)
+        except:
+            pass
 
-with st.expander("LLM에 전달된 마지막 데이터 보기"):
-    if st.session_state.last_snapshot:
-        st.code(snapshot_to_text(st.session_state.last_snapshot))
+# =========================================================
+# 대시보드 (자원 현황)
+# =========================================================
+snap = state.get("snapshot", {})
+if snap:
+    c1, c2 = st.columns(2)
+    with c1:
+        st.metric("CPU 사용률", f"{snap.get('cpu_percent', 0):.1f}%")
+    with c2:
+        mem_pct = snap.get('mem_percent', 0)
+        used = snap.get('mem_used_gb', 0)
+        total = snap.get('mem_total_gb', 0)
+        st.metric("RAM 사용률", f"{mem_pct:.1f}%", f"{used:.1f} / {total:.1f} GB", delta_color="off")
+        
+    st.markdown("### 상위 프로세스 현황")
+    
+    t_c1, t_c2 = st.columns(2)
+    with t_c1:
+        st.markdown("**CPU 점유율 상위**")
+        df_cpu = pd.DataFrame(snap.get("top_cpu", []))
+        if not df_cpu.empty:
+            st.dataframe(df_cpu[["name", "pid", "cpu_percent", "mem_percent"]], use_container_width=True, hide_index=True)
+            
+    with t_c2:
+        st.markdown("**메모리 점유율 상위**")
+        df_mem = pd.DataFrame(snap.get("top_mem", []))
+        if not df_mem.empty:
+            st.dataframe(df_mem[["name", "pid", "cpu_percent", "mem_percent"]], use_container_width=True, hide_index=True)
+
+# =========================================================
+# AI 분석 결과
+# =========================================================
+st.divider()
+st.markdown("### 🤖 AI 상세 분석 리포트")
+st.markdown(state.get("analysis_result", "아직 분석 결과가 없습니다. (최대 1분 소요)"))
