@@ -54,28 +54,31 @@ def get_static_gpu_info():
         return []
 
 
-SYSTEM_PROMPT = """당신은 컴퓨터 자원 최적화를 돕는 전문 AI 어시스턴트입니다.
+from resource_advisor_command import get_commands_prompt
+
+def get_dynamic_system_prompt():
+    return f"""당신은 컴퓨터 자원 최적화를 돕는 전문 AI 어드바이저입니다.
 사용자로부터 CPU, RAM, GPU, 디스크 사용량과 상위 프로세스 목록을 전달받습니다.
-다음 관점으로 분석해서 한국어로 간결하게 답변하세요.
+다음 관점용으로 분석해서 한국어로 간결하게 답변하세요.
 
 1. 현재 낭비되고 있거나 비정상적으로 자원을 많이 쓰는 프로세스가 있는지
-2. RAM/디스크/GPU 중 여유가 부족하거나 과도하게 남는 자원이 있는지
+2. RAM/디스크/GPU 중 여유가 부족하거나 과도하게 쓰는 자원이 있는지
 3. 더 효율적으로 자원을 쓰기 위한 구체적이고 실행 가능한 조치
 
-불필요한 군더더기 설명 없이 항목별 bullet로 작성하고, 심각도가 높은 항목을 먼저 언급하세요.
+불필요한 군더더기 설명 없이 항목별로 bullet으로 작성하고, 심각도가 높은 항목을 먼저 언급하세요.
 
 [🔥 핵심 지시사항 - 능동적인 시스템 제어 태그 사용 필수]
-사용자에게 "작업 관리자에서 프로세스를 종료하세요"와 같이 말로만 제안하지 마십시오.
+사용자에게 "작업 관리자에서 프로세스를 종료하세요" 와 같이 말로만 제안하지 마십시오.
 당신이 프로세스를 끄거나 파일을 삭제해야 한다고 판단했다면, 답변 텍스트의 **맨 마지막**에 반드시 다음 형식의 시스템 제어 태그를 직접 적으십시오. 
-시스템이 이 태그를 인식하여 즉각 사용자 승인 후 조치할 것입니다.
+시스템이 이 태그를 인식하여 즉각 사용자의 승인을 거쳐 조치할 것입니다.
 
-- 프로세스 종료 시: [COMMAND:KILL_PROCESS:PID] (예: [COMMAND:KILL_PROCESS:1234])
-- 파일 삭제 시: [COMMAND:DELETE_FILE:파일의절대경로] (예: [COMMAND:DELETE_FILE:C:\temp\dummy.txt])
+{get_commands_prompt()}
 
 [🚫 절대 금지 사항]
 1. `python.exe` 프로세스는 이 자원 어드바이저 앱 자체를 구동하는 핵심 프로세스이므로 **어떠한 경우에도 종료 태그를 발급하지 마십시오.** (자신을 끄게 됩니다)
-2. 시스템을 망가뜨릴 수 있는 핵심 프로세스(explorer.exe, svchost.exe 등)나 Windows 시스템 폴더 내 파일에 대해서는 절대 제어 태그를 발급하지 마세요.
+2. 시스템을 망가뜨릴 수 있는 핵심 프로세스(explorer.exe, svchost.exe 등)나 Windows 시스템 폴더 내 파일에 대해서는 제어 태그를 발급하지 마세요.
 """
+
 
 AVAILABLE_MODELS = [
     "openai/gpt-4o-mini",
@@ -245,7 +248,7 @@ def ask_llm(snapshot_text, model, temperature):
     response = client.chat.completions.create(
         model=model,
         messages=[
-            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "system", "content": get_dynamic_system_prompt()},
             {"role": "user", "content": f"다음은 현재 시스템 자원 사용 현황입니다.\n\n{snapshot_text}"}
         ],
         temperature=temperature,

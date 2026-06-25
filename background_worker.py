@@ -56,9 +56,22 @@ def notify_user(actions):
             "content": "자세히 보기 및 승인"
         }
         
-        toast("⚠️ 시스템 자원 어드바이저", msg, buttons=[button], audio={"src": "ms-winsoundevent:Notification.Default"})
+        result = toast("⚠️ 시스템 자원 어드바이저", msg, buttons=[button], audio={"src": "ms-winsoundevent:Notification.Default"})
+        if result and isinstance(result, tuple) and "HResult" in str(result):
+            raise Exception(f"Toast HResult Error: {result}")
+            
     except Exception as e:
-        print(f"Toast 전송 실패: {e}")
+        print(f"Toast 알림 전송 실패(방해 금지 모드 등), 팝업으로 대체합니다: {e}")
+        try:
+            import tkinter as tk
+            from tkinter import messagebox
+            root = tk.Tk()
+            root.withdraw()
+            root.attributes("-topmost", True)
+            messagebox.showwarning("⚠️ 시스템 자원 어드바이저 경고", msg + "\n\n웹 대시보드(http://localhost:8501)를 열어 승인해 주세요!")
+            root.destroy()
+        except Exception as fallback_e:
+            print(f"팝업 전송도 실패했습니다: {fallback_e}")
 
 def main():
     print("========================================")

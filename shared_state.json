@@ -1,0 +1,133 @@
+{
+  "snapshot": {
+    "timestamp": "22:42:35",
+    "cpu_percent": 5.4,
+    "mem_total_gb": 23.342971801757812,
+    "mem_used_gb": 14.42129135131836,
+    "mem_percent": 61.8,
+    "disks": [
+      {
+        "mount": "C:\\",
+        "total_gb": 930.0807075500488,
+        "used_gb": 561.9776611328125,
+        "percent": 60.4
+      },
+      {
+        "mount": "E:\\",
+        "total_gb": 928.8740005493164,
+        "used_gb": 847.5504875183105,
+        "percent": 91.2
+      }
+    ],
+    "gpus": [
+      {
+        "name": "NVIDIA GeForce RTX 3050 Ti Laptop GPU",
+        "util_percent": 0.0,
+        "mem_used_mb": 0.0,
+        "mem_total_mb": 4096.0,
+        "temp_c": 50.0
+      }
+    ],
+    "top_cpu": [
+      {
+        "pid": 0,
+        "name": "System Idle Process",
+        "cpu_percent": 1095.0,
+        "mem_percent": 3.268390415771945e-05
+      },
+      {
+        "pid": 4,
+        "name": "System",
+        "cpu_percent": 32.9,
+        "mem_percent": 0.02943185569402636
+      },
+      {
+        "pid": 20624,
+        "name": "Taskmgr.exe",
+        "cpu_percent": 8.2,
+        "mem_percent": 0.6993538392148019
+      },
+      {
+        "pid": 18808,
+        "name": "Antigravity IDE.exe",
+        "cpu_percent": 4.1,
+        "mem_percent": 0.6948107765368788
+      },
+      {
+        "pid": 12080,
+        "name": "explorer.exe",
+        "cpu_percent": 3.7,
+        "mem_percent": 1.4100489931723323
+      },
+      {
+        "pid": 4900,
+        "name": "Antigravity IDE.exe",
+        "cpu_percent": 3.6,
+        "mem_percent": 2.446243148636591
+      },
+      {
+        "pid": 6552,
+        "name": "aswToolsSvc.exe",
+        "cpu_percent": 2.8,
+        "mem_percent": 0.43376443402917364
+      }
+    ],
+    "top_mem": [
+      {
+        "pid": 3796,
+        "name": "MemCompression",
+        "cpu_percent": 0.0,
+        "mem_percent": 7.340951951392498
+      },
+      {
+        "pid": 1244,
+        "name": "chrome.exe",
+        "cpu_percent": 1.2,
+        "mem_percent": 2.7411173319475357
+      },
+      {
+        "pid": 21020,
+        "name": "language_server_windows_x64.exe",
+        "cpu_percent": 0.8,
+        "mem_percent": 2.7292694166903626
+      },
+      {
+        "pid": 4900,
+        "name": "Antigravity IDE.exe",
+        "cpu_percent": 3.6,
+        "mem_percent": 2.446243148636591
+      },
+      {
+        "pid": 7960,
+        "name": "SourceTree.exe",
+        "cpu_percent": 0.0,
+        "mem_percent": 1.6134736126499782
+      },
+      {
+        "pid": 6872,
+        "name": "chrome.exe",
+        "cpu_percent": 0.0,
+        "mem_percent": 1.468683917231281
+      },
+      {
+        "pid": 12456,
+        "name": "aswidsagent.exe",
+        "cpu_percent": 0.4,
+        "mem_percent": 1.4360163550256404
+      }
+    ]
+  },
+  "analysis_result": "- **비정상적인 자원 점유 프로세스**:\n  - `Antigravity IDE.exe` (PID 4900): CPU 17.9%, MEM 2.4% - CPU 사용률이 상대적으로 높음.\n  - `language_server_windows_x64.exe` (PID 21020): CPU 9.8%, MEM 2.7% - CPU 사용률이 높음.\n\n- **여유가 부족한 자원**:\n  - **디스크 E:**: 91.2% 사용 - 여유 공간이 부족하여 성능 저하 우려.\n  \n- **자원 효율화를 위한 조치**:\n  - `Antigravity IDE.exe`와 `language_server_windows_x64.exe`의 CPU 사용률이 높으므로, 필요하지 않다면 종료하세요. \n  - 디스크 E:의 불필요한 파일을 삭제하여 여유 공간을 확보하세요.\n\n[COMMAND:KILL_PROCESS:4900]\n[COMMAND:KILL_PROCESS:21020]",
+  "pending_actions": [
+    {
+      "type": "KILL_PROCESS",
+      "target": "4900"
+    },
+    {
+      "type": "KILL_PROCESS",
+      "target": "21020"
+    }
+  ],
+  "last_update": 1782394955.5923877,
+  "last_update_str": "2026-06-25 22:42:35"
+}
