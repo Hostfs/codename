@@ -1,5 +1,17 @@
 import streamlit as st
 import time
+import os
+from resource_core import (
+    OPENROUTER_API_KEY,
+    AVAILABLE_MODELS,
+    ResourceMonitor,
+    snapshot_to_text,
+    ask_llm,
+    ask_llm_question,
+    load_whitelist,
+    save_whitelist,
+)
+from resource_advisor_command import execute_action, parse_actions
 
 st.set_page_config(
     page_title="AI 시스템 자원 분석기",
@@ -10,6 +22,18 @@ st.set_page_config(
 # -----------------------------
 # 세션 상태 초기화
 # -----------------------------
+if "monitor" not in st.session_state:
+    st.session_state.monitor = ResourceMonitor()
+
+if "last_snapshot" not in st.session_state:
+    st.session_state.last_snapshot = None
+
+if "last_analysis" not in st.session_state:
+    st.session_state.last_analysis = None
+
+if "pending_actions" not in st.session_state:
+    st.session_state.pending_actions = []
+
 if "dark_mode" not in st.session_state:
     st.session_state.dark_mode = False
 
@@ -61,26 +85,20 @@ with st.sidebar:
     st.header("2. AI Setting")
 
     with st.expander("Model", expanded=True):
-        model = st.selectbox(
-            "사용 모델",
-            [
-                "openai/gpt-4o-mini",
-                "qwen/qwen-2.5-coder",
-                "meta-llama/llama-3.1-8b-instruct"
-            ]
-        )
+        model = st.selectbox("사용 모델", AVAILABLE_MODELS)
 
     with st.expander("Temperature", expanded=False):
-        temperature = st.slider("Temperature", 0.0, 1.0, 0.7)
+        temperature = st.slider("Temperature", 0.0, 1.0, 0.3)
 
     with st.expander("Refresh", expanded=False):
         refresh_interval = st.selectbox(
             "대시보드 새로고침 주기",
-            ["수동", "5초", "10초", "30초", "1분"]
+            ["5초", "10초", "30초", "1분", "수동"]
         )
+        refresh_map = {"5초": 5, "10초": 10, "30초": 30, "1분": 60, "수동": None}
+        ref_sec = refresh_map[refresh_interval]
 
     with st.expander("Options", expanded=False):
-        auto_analysis = st.checkbox("자동 AI 분석", value=True)
         st.checkbox("다크 모드", key="dark_mode")
 
 
@@ -230,39 +248,17 @@ st.markdown(f"""
 
 
 # -----------------------------
-# AI 분석 요청 함수 자리
+# 헬퍼 함수
 # -----------------------------
-def request_ai_resource_analysis(user_prompt):
-    """
-    이 함수는 나중에 OpenRouter API와 연결할 자리입니다.
-
-    실제 구현 흐름:
-    1. 백그라운드 수집 모듈이 노트북 상태 정보를 가져옴
-    2. 해당 정보를 OpenRouter LLM에 전달
-    3. LLM이 CPU/RAM/GPU/저장소 상태를 자연어로 분석
-    4. 결과를 화면에 출력
-    """
-
-    return f"""
-### AI 시스템 분석 결과
-
-현재 요청 내용: `{user_prompt}`
-
-AI가 실시간으로 노트북의 프로세스 상태, CPU 사용 흐름, RAM 점유 상황,
-GPU 사용 여부, 저장소 여유 공간 등을 분석한 뒤 결과를 제공하는 영역입니다.
-
-#### 분석 항목
-- CPU 자원 낭비 여부
-- RAM을 많이 사용하는 프로세스
-- GPU 사용이 필요한 작업 여부
-- 저장소 정리 필요성
-- 백그라운드 상주 프로그램 점검
-- 종료 또는 비활성화 추천 프로세스
-
-#### AI 조언 예시
-현재 실행 중인 프로그램 중 사용 빈도는 낮지만 백그라운드에서 계속 실행되는 항목이 있다면,
-이를 종료하거나 시작 프로그램에서 제외하는 방식으로 시스템 자원을 절약할 수 있습니다.
-"""
+def get_process_name_from_pid(pid_str, snap):
+    try:
+        pid = int(pid_str)
+        for p in snap.get("top_cpu", []) + snap.get("top_mem", []):
+            if p["pid"] == pid:
+                return p["name"]
+    except:
+        pass
+    return None
 
 
 # -----------------------------
@@ -305,10 +301,20 @@ if page == "홈":
     st.divider()
 
     if st.button("AI 시스템 분석 시작하기", use_container_width=True):
-        st.session_state.ai_system_summary = request_ai_resource_analysis(
-            "현재 노트북 상태를 전체적으로 분석해줘."
-        )
-        st.success("AI 분석 요청이 생성되었습니다. AI 분석 화면에서 결과를 확인하세요.")
+        if not OPENROUTER_API_KEY:
+            st.error(".env 파일에 OPENROUTER_API_KEY가 설정되어 있지 않습니다.")
+        else:
+            with st.spinner("AI가 자원 사용 현황을 분석하고 있습니다..."):
+                snap = st.session_state.monitor.get_snapshot()
+                st.session_state.last_snapshot = snap
+                text = snapshot_to_text(snap, whitelist=load_whitelist())
+                try:
+                    res = ask_llm(text, model, temperature)
+                    st.session_state.ai_system_summary = res
+                    st.session_state.pending_actions = parse_actions(res)
+                    st.success("AI 시스템 전체 분석이 완료되었습니다. '리소스 분석' 또는 '최적화 리포트' 화면에서 상세 내용을 확인하세요.")
+                except Exception as e:
+                    st.error(f"분석 중 오류 발생: {e}")
 
 
 # -----------------------------
@@ -317,67 +323,132 @@ if page == "홈":
 elif page == "리소스 분석":
     st.markdown('<div class="main-title">2. Resource Dashboard</div>', unsafe_allow_html=True)
     st.markdown(
-        '<div class="sub-title">CPU, RAM, GPU, 저장소 수치를 직접 생성하지 않고, AI 분석 결과를 기반으로 시스템 상태를 표시합니다.</div>',
+        '<div class="sub-title">CPU, RAM, GPU, 저장소 수치 및 프로세스 리스트를 실시간으로 모니터링하고 AI 분석을 요청합니다.</div>',
         unsafe_allow_html=True
     )
 
-    col1, col2, col3, col4 = st.columns(4)
+    # ── 조치 제안 카드 (승인 대기) ──
+    pending_actions = st.session_state.get("pending_actions", [])
+    snap = st.session_state.last_snapshot
+    
+    if pending_actions:
+        st.error("⚠️ AI가 시스템 최적화를 위한 조치를 제안했습니다. 신중히 확인 후 승인해 주세요.")
+        
+        whitelist = load_whitelist()
+        filtered_actions = []
+        
+        for act in pending_actions:
+            p_name = get_process_name_from_pid(act['target'], snap) if act['type'] == 'KILL_PROCESS' and snap else None
+            
+            # 화이트리스트 필터링
+            if act['type'] == 'KILL_PROCESS' and p_name and p_name in whitelist:
+                continue
+            if act['type'] == 'DELETE_FILE' and act['target'] in whitelist:
+                continue
+                
+            filtered_actions.append(act)
+            
+            col_act1, col_act2 = st.columns([3, 1])
+            with col_act1:
+                st.markdown(f"- **[{act['type']}]** `{act['target']}` " + (f"({p_name})" if p_name else ""))
+            with col_act2:
+                if act['type'] == 'KILL_PROCESS' and p_name:
+                    if st.button("✅ 예외 등록", key=f"ignore_{act['target']}_{p_name}"):
+                        whitelist.append(p_name)
+                        save_whitelist(whitelist)
+                        st.success(f"'{p_name}' 프로세스가 화이트리스트에 등록되었습니다!")
+                        st.rerun()
+                elif act['type'] == 'DELETE_FILE':
+                    if st.button("✅ 예외 등록", key=f"ignore_{act['target']}"):
+                        whitelist.append(act['target'])
+                        save_whitelist(whitelist)
+                        st.success(f"'{act['target']}' 파일이 화이트리스트에 등록되었습니다!")
+                        st.rerun()
+        
+        if filtered_actions:
+            if st.button("🚨 제안된 조치 실행 일괄 승인", type="primary", use_container_width=True):
+                for act in filtered_actions:
+                    success, msg = execute_action(act["type"], act["target"])
+                    if success:
+                        st.success(f"성공: {act['target']} - {msg}")
+                    else:
+                        st.error(f"실패: {act['target']} - {msg}")
+                
+                st.session_state.pending_actions = []
+                st.rerun()
 
-    with col1:
-        st.markdown(
-            """
-            <div class="metric-card">
-                <div class="metric-label">CPU 상태</div>
-                <div class="metric-value">AI 분석 대기</div>
-            </div>
-            """,
-            unsafe_allow_html=True
-        )
+    # ── 실시간 대시보드 렌더링 ──
+    @st.fragment(run_every=ref_sec)
+    def render_live_dashboard():
+        live_snap = st.session_state.monitor.get_snapshot()
+        st.session_state.last_snapshot = live_snap
+        
+        # 지표 카드 계산
+        cpu_val = f"{live_snap['cpu_percent']:.1f}%"
+        ram_val = f"{live_snap['mem_percent']:.1f}%"
+        
+        gpu_val = "N/A"
+        if live_snap["gpus"]:
+            gpu = live_snap["gpus"][0]
+            if gpu.get("static_only"):
+                gpu_val = "감지됨"
+            else:
+                gpu_val = f"{gpu['util_percent']:.0f}%"
+                
+        disk_val = "N/A"
+        if live_snap["disks"]:
+            disk_val = f"{live_snap['disks'][0]['percent']:.1f}%"
+            
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            st.markdown(f'<div class="metric-card"><div class="metric-label">CPU 사용률</div><div class="metric-value">{cpu_val}</div></div>', unsafe_allow_html=True)
+        with col2:
+            st.markdown(f'<div class="metric-card"><div class="metric-label">RAM 사용률</div><div class="metric-value">{ram_val}</div></div>', unsafe_allow_html=True)
+        with col3:
+            st.markdown(f'<div class="metric-card"><div class="metric-label">GPU 사용률</div><div class="metric-value">{gpu_val}</div></div>', unsafe_allow_html=True)
+        with col4:
+            st.markdown(f'<div class="metric-card"><div class="metric-label">주 디스크 사용률</div><div class="metric-value">{disk_val}</div></div>', unsafe_allow_html=True)
+            
+        st.markdown(f"<span style='color:gray; font-size:11px;'>대시보드 실시간 갱신: {live_snap['timestamp']}</span>", unsafe_allow_html=True)
+        
+        col_cpu, col_mem = st.columns(2)
+        with col_cpu:
+            st.markdown("### CPU 상위 프로세스")
+            st.dataframe(live_snap["top_cpu"], hide_index=True, use_container_width=True)
+        with col_mem:
+            st.markdown("### 메모리 상위 프로세스")
+            st.dataframe(live_snap["top_mem"], hide_index=True, use_container_width=True)
+            
+        col_disk, col_gpu = st.columns(2)
+        with col_disk:
+            st.markdown("### 디스크 목록")
+            st.dataframe(live_snap["disks"], hide_index=True, use_container_width=True)
+        with col_gpu:
+            st.markdown("### GPU 정보")
+            if live_snap["gpus"]:
+                st.dataframe(live_snap["gpus"], hide_index=True, use_container_width=True)
+            else:
+                st.info("감지된 GPU 장치가 없습니다.")
+                
+    render_live_dashboard()
 
-    with col2:
-        st.markdown(
-            """
-            <div class="metric-card">
-                <div class="metric-label">RAM 상태</div>
-                <div class="metric-value">AI 분석 대기</div>
-            </div>
-            """,
-            unsafe_allow_html=True
-        )
-
-    with col3:
-        st.markdown(
-            """
-            <div class="metric-card">
-                <div class="metric-label">GPU 상태</div>
-                <div class="metric-value">AI 분석 대기</div>
-            </div>
-            """,
-            unsafe_allow_html=True
-        )
-
-    with col4:
-        st.markdown(
-            """
-            <div class="metric-card">
-                <div class="metric-label">저장소 상태</div>
-                <div class="metric-value">AI 분석 대기</div>
-            </div>
-            """,
-            unsafe_allow_html=True
-        )
-
-    st.markdown("### 프로세스 상태 표시창")
-
-    st.info(
-        "이 영역은 AI가 실시간으로 분석한 프로세스 상태를 표시하는 공간입니다. "
-        "현재 코드는 random 값이나 내부 임시 데이터를 사용하지 않습니다."
-    )
+    st.divider()
 
     if st.button("현재 노트북 리소스 AI 분석 요청", use_container_width=True):
-        st.session_state.ai_resource_result = request_ai_resource_analysis(
-            "현재 노트북의 CPU, RAM, GPU, 저장소 상태와 낭비되는 프로세스를 분석해줘."
-        )
+        if not OPENROUTER_API_KEY:
+            st.error(".env 파일에 OPENROUTER_API_KEY가 설정되어 있지 않습니다.")
+        elif st.session_state.last_snapshot is None:
+            st.warning("아직 수집된 자원 데이터가 없습니다. 잠시 후 다시 시도하세요.")
+        else:
+            with st.spinner("AI가 자원 사용 현황을 분석하고 있습니다..."):
+                text = snapshot_to_text(st.session_state.last_snapshot, whitelist=load_whitelist())
+                try:
+                    res = ask_llm(text, model, temperature)
+                    st.session_state.ai_resource_result = res
+                    st.session_state.pending_actions = parse_actions(res)
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"API 호출 중 오류 발생: {e}")
 
     if st.session_state.ai_resource_result:
         st.markdown(st.session_state.ai_resource_result)
@@ -399,7 +470,7 @@ elif page == "리소스 분석":
 # -----------------------------
 # AI 분석 화면
 # -----------------------------
-elif page == "AI 분석":
+elif page == "AI 채팅":
     st.markdown('<div class="main-title">3. LLM Analysis Chat</div>', unsafe_allow_html=True)
     st.markdown(
         '<div class="sub-title">AI에게 현재 노트북 상태, 프로세스 관리, 자원 낭비 여부를 질문합니다.</div>',
@@ -416,14 +487,20 @@ elif page == "AI 분석":
 
     if user_input:
         st.session_state.messages.append({"role": "user", "content": user_input})
-
         with st.chat_message("user"):
             st.write(user_input)
 
-        ai_answer = request_ai_resource_analysis(user_input)
+        if not OPENROUTER_API_KEY:
+            ai_answer = "⚠ OPENROUTER_API_KEY가 없습니다."
+        else:
+            snap_text = snapshot_to_text(st.session_state.last_snapshot, whitelist=load_whitelist()) if st.session_state.last_snapshot else ""
+            with st.spinner("AI가 답변을 준비 중입니다..."):
+                try:
+                    ai_answer = ask_llm_question(snap_text, user_input, model, temperature)
+                except Exception as e:
+                    ai_answer = f"답변 중 오류 발생: {e}"
 
         st.session_state.messages.append({"role": "assistant", "content": ai_answer})
-
         with st.chat_message("assistant"):
             st.write(ai_answer)
 
@@ -446,7 +523,6 @@ elif page == "최적화 리포트":
         st.info("아직 생성된 AI 분석 리포트가 없습니다. 홈 또는 AI 분석 화면에서 분석을 먼저 실행하세요.")
 
     col1, col2 = st.columns(2)
-
     with col1:
         st.markdown(
             """
@@ -484,12 +560,18 @@ elif page == "최적화 리포트":
     st.markdown("### 리포트 생성")
 
     if st.button("AI 최적화 리포트 생성", use_container_width=True):
-        with st.spinner("AI가 리포트를 생성하는 중입니다..."):
-            time.sleep(1)
-
-        st.session_state.ai_system_summary = request_ai_resource_analysis(
-            "현재 노트북 상태를 바탕으로 최적화 리포트를 작성해줘."
-        )
-
-        st.success("리포트 생성 완료")
-        st.markdown(st.session_state.ai_system_summary)
+        if not OPENROUTER_API_KEY:
+            st.error(".env 파일에 OPENROUTER_API_KEY가 설정되어 있지 않습니다.")
+        else:
+            with st.spinner("AI가 리포트를 생성하는 중입니다..."):
+                snap = st.session_state.monitor.get_snapshot()
+                st.session_state.last_snapshot = snap
+                text = snapshot_to_text(snap, whitelist=load_whitelist())
+                try:
+                    res = ask_llm(text, model, temperature)
+                    st.session_state.ai_system_summary = res
+                    st.session_state.pending_actions = parse_actions(res)
+                    st.success("리포트 생성 완료")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"리포트 생성 실패: {e}")

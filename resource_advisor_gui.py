@@ -73,7 +73,7 @@ from PyQt6.QtWidgets import (
     QTableWidget, QTableWidgetItem, QHeaderView,
     QCheckBox, QGroupBox, QLineEdit, QSizePolicy, QSplitter,
     QMenuBar, QMenu, QMessageBox, QStatusBar, QTabWidget, QFileDialog,
-    QDialog,
+    QDialog, QSystemTrayIcon, QStyle,
 )
 
 # ─────────────────────────────────────────────────────────────
@@ -100,7 +100,10 @@ from resource_core import (
     ask_llm,
     ask_llm_question,
     get_disk_snapshot,
+    load_whitelist,
+    save_whitelist,
 )
+from resource_advisor_command import execute_action, parse_actions
 from resource_actions import (
     list_running_processes,
     analyze_unnecessary_processes,
@@ -2066,6 +2069,32 @@ class Dashboard(QScrollArea):
         self.warn_card.hide()
         lay.addWidget(self.warn_card)
 
+        # ── 제안된 AI 조치 경고 카드 (기본 숨김)
+        self.action_card = QFrame()
+        self.action_card.setObjectName("card")
+        self.action_card.setStyleSheet("QFrame#card { border: 2px solid #f38ba8; background-color: #312229; border-radius: 8px; }")
+        al = QVBoxLayout(self.action_card)
+        al.setContentsMargins(14, 12, 14, 12)
+        al.setSpacing(8)
+        
+        hdr_lay = QHBoxLayout()
+        hdr_lay.addWidget(make_label("🚨  AI 추천 최적화 조치 (승인 대기)", bold=True, size=11, color=C["red"]))
+        hdr_lay.addStretch()
+        al.addLayout(hdr_lay)
+        
+        self.action_list_layout = QVBoxLayout()
+        self.action_list_layout.setSpacing(6)
+        al.addLayout(self.action_list_layout)
+        
+        self.action_approve_btn = QPushButton("🚨 제안된 조치 일괄 실행 승인")
+        self.action_approve_btn.setMinimumHeight(32)
+        self.action_approve_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.action_approve_btn.setStyleSheet(f"background-color: {C['red']}; color: {C['crust']}; font-weight: bold; padding: 6px 12px; border-radius: 4px;")
+        al.addWidget(self.action_approve_btn)
+        
+        self.action_card.hide()
+        lay.addWidget(self.action_card)
+
         # ── 프로세스 테이블
         tb = QHBoxLayout()
         tb.setSpacing(8)
@@ -2250,11 +2279,15 @@ class MainWindow(QMainWindow):
         self.malware_tab = MalwareTab(get_model, get_temp)
         self.tabs.addTab(self.malware_tab, "🦠 악성파일")
 
+        # 트레이 초기화
+        self._init_tray()
+
         # 버튼 연결
         self.sidebar.analyze_btn.clicked.connect(self._start_analysis)
         self.dash.chat_send_btn.clicked.connect(self._start_chat)
         self.dash.chat_input.returnPressed.connect(self._start_chat)
         self.sidebar.ref_slider.valueChanged.connect(self._on_refresh_changed)
+        self.dash.action_approve_btn.clicked.connect(self._approve_all_actions)
 
         # 타이머
         self._snap_timer = QTimer(self)
@@ -2455,6 +2488,16 @@ class MainWindow(QMainWindow):
             names = "\n".join(
                 f"• {r['name']} (PID {r['pid']}) — RAM {r['mem_percent']:.0f}%" for r in new_hogs
             )
+            
+            # 네이티브 토스트 알림 발송
+            names_brief = ", ".join(f"{r['name']}(RAM {r['mem_percent']:.0f}%)" for r in new_hogs)
+            self.tray_icon.showMessage(
+                "🚨 자원 과다 사용 감지",
+                f"다음 프로그램이 자원을 과점유하고 있습니다:\n{names_brief}",
+                QSystemTrayIcon.MessageIcon.Warning,
+                5000
+            )
+
             self._mem_alert_open = True
             try:
                 QMessageBox.warning(
@@ -2508,6 +2551,150 @@ class MainWindow(QMainWindow):
         self.sidebar.analyze_btn.setEnabled(True)
         self.sidebar.status_lbl.setText("")
         self.dash.analysis_box.setPlainText(result)
+
+        # AI 제안 최적화 조치 파싱 및 UI 렌더링
+        self._pending_actions = parse_actions(result)
+
+        # 기존 조치 위젯 청소
+        while self.dash.action_list_layout.count():
+            item = self.dash.action_list_layout.takeAt(0)
+            widget = item.widget()
+            if widget:
+                widget.deleteLater()
+
+        if not self._pending_actions:
+            self.dash.action_card.hide()
+            self._filtered_actions = []
+            return
+
+        whitelist = load_whitelist()
+        filtered_actions = []
+
+        for act in self._pending_actions:
+            act_type = act["type"]
+            target = act["target"]
+
+            name = target
+            proc_name = None
+            if act_type == "KILL_PROCESS":
+                if self._last_snap:
+                    try:
+                        pid = int(target)
+                        for p in self._last_snap.get("top_cpu", []) + self._last_snap.get("top_mem", []):
+                            if p["pid"] == pid:
+                                proc_name = p["name"]
+                                break
+                    except ValueError:
+                        pass
+                if proc_name:
+                    name = f"{proc_name} (PID {target})"
+                    if proc_name in whitelist:
+                        continue
+                else:
+                    name = f"PID {target}"
+            elif act_type == "DELETE_FILE":
+                if target in whitelist:
+                    continue
+                name = target
+
+            filtered_actions.append(act)
+
+            # 조치 위젯 빌드
+            row_widget = QWidget()
+            row_lay = QHBoxLayout(row_widget)
+            row_lay.setContentsMargins(0, 2, 0, 2)
+            row_lay.setSpacing(8)
+
+            desc_lbl = QLabel(f"• [{act_type}] {name}")
+            desc_lbl.setStyleSheet(f"color: {C['text']}; font-size: 10pt;")
+            desc_lbl.setWordWrap(True)
+            row_lay.addWidget(desc_lbl, 1)
+
+            # 개별 예외 등록
+            ignore_btn = QPushButton("예외 등록")
+            ignore_btn.setMinimumHeight(24)
+            ignore_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            ignore_btn.setStyleSheet(f"background-color: {C['surface0']}; color: {C['text']}; padding: 2px 8px; border-radius: 4px;")
+
+            def make_ignore_handler(target_val, act_t, p_name):
+                def handler():
+                    w_list = load_whitelist()
+                    add_target = p_name if (act_t == "KILL_PROCESS" and p_name) else target_val
+                    if add_target not in w_list:
+                        w_list.append(add_target)
+                        save_whitelist(w_list)
+                        QMessageBox.information(self, "성공", f"'{add_target}'이(가) 예외 목록에 등록되었습니다.")
+                        self._apply_analysis(result)
+                return handler
+
+            ignore_btn.clicked.connect(make_ignore_handler(target, act_type, proc_name))
+            row_lay.addWidget(ignore_btn)
+            self.dash.action_list_layout.addWidget(row_widget)
+
+        self._filtered_actions = filtered_actions
+        if not filtered_actions:
+            self.dash.action_card.hide()
+        else:
+            self.dash.action_card.show()
+
+    def _approve_all_actions(self):
+        if not hasattr(self, "_filtered_actions") or not self._filtered_actions:
+            return
+
+        reply = QMessageBox.warning(
+            self, "🚨 일괄 조치 승인",
+            "제안된 시스템 최적화 조치를 정말 일괄 승인하고 실행하겠습니까?\n이 작업은 되돌릴 수 없습니다.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        success_count = 0
+        fail_count = 0
+        results = []
+
+        for act in self._filtered_actions:
+            act_type = act["type"]
+            target = act["target"]
+            success, msg = execute_action(act_type, target)
+            if success:
+                success_count += 1
+                results.append(f"성공: [{act_type}] {target} - {msg}")
+            else:
+                fail_count += 1
+                results.append(f"실패: [{act_type}] {target} - {msg}")
+
+        summary = f"조치 실행 완료\n성공: {success_count}건, 실패: {fail_count}건\n\n상세 정보:\n" + "\n".join(results)
+        QMessageBox.information(self, "일괄 조치 실행 결과", summary)
+
+        self.dash.action_card.hide()
+        self._trigger_snapshot()
+
+    def _init_tray(self):
+        self.tray_icon = QSystemTrayIcon(self)
+        self.tray_icon.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_ComputerIcon))
+
+        tray_menu = QMenu(self)
+        show_action = QAction("열기(&O)", self)
+        show_action.triggered.connect(self._restore_window)
+        quit_action = QAction("종료(&Q)", self)
+        quit_action.triggered.connect(QApplication.instance().quit)
+
+        tray_menu.addAction(show_action)
+        tray_menu.addAction(quit_action)
+        self.tray_icon.setContextMenu(tray_menu)
+
+        self.tray_icon.activated.connect(self._on_tray_activated)
+        self.tray_icon.show()
+
+    def _restore_window(self):
+        self.showNormal()
+        self.activateWindow()
+
+    def _on_tray_activated(self, reason):
+        if reason == QSystemTrayIcon.ActivationReason.DoubleClick:
+            self._restore_window()
 
     # ── AI 채팅
     def _start_chat(self):
