@@ -212,7 +212,31 @@ class ResourceMonitor:
         }
 
 
-def snapshot_to_text(snap):
+def load_whitelist(file_path="whitelist.json"):
+    if not os.path.exists(file_path):
+        return []
+    try:
+        with open(file_path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return []
+
+def save_whitelist(whitelist, file_path="whitelist.json"):
+    try:
+        with open(file_path, "w", encoding="utf-8") as f:
+            json.dump(whitelist, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"Failed to save whitelist: {e}")
+
+def _format_process_name(name, whitelist):
+    if name in whitelist:
+        return f"{name} (사용자 승인된 작업)"
+    return name
+
+def snapshot_to_text(snap, whitelist=None):
+    if whitelist is None:
+        whitelist = []
+        
     lines = [f"[측정 시각 {snap['timestamp']}]"]
     lines.append(f"CPU 사용률: {snap['cpu_percent']:.1f}%")
     lines.append(
@@ -235,13 +259,42 @@ def snapshot_to_text(snap):
 
     lines.append("CPU 사용률 상위 프로세스:")
     for p in snap["top_cpu"]:
-        lines.append(f"  - {p['name']} (PID {p['pid']}): CPU {p['cpu_percent']:.1f}%, MEM {p['mem_percent']:.1f}%")
+        name_str = _format_process_name(p['name'], whitelist)
+        lines.append(f"  - {name_str} (PID {p['pid']}): CPU {p['cpu_percent']:.1f}%, MEM {p['mem_percent']:.1f}%")
 
     lines.append("메모리 사용률 상위 프로세스:")
     for p in snap["top_mem"]:
-        lines.append(f"  - {p['name']} (PID {p['pid']}): MEM {p['mem_percent']:.1f}%, CPU {p['cpu_percent']:.1f}%")
+        name_str = _format_process_name(p['name'], whitelist)
+        lines.append(f"  - {name_str} (PID {p['pid']}): MEM {p['mem_percent']:.1f}%, CPU {p['cpu_percent']:.1f}%")
 
     return "\n".join(lines)
+
+def get_minimal_snapshot_text(snap, whitelist=None):
+    if whitelist is None:
+        whitelist = []
+        
+    """1단계(Triage) 판단을 위한 초소형 스냅샷 텍스트를 생성합니다."""
+    # 시스템 총합
+    cpu = f"{snap['cpu_percent']:.1f}%"
+    ram = f"{snap['mem_percent']:.1f}%"
+    gpu_strs = [f"{g['util_percent']:.0f}%" for g in snap["gpus"]]
+    gpu = ", ".join(gpu_strs) if gpu_strs else "N/A"
+    
+    # 프로세스 상위 3개 (이름과 점유율만)
+    top_c_strs = []
+    for p in snap["top_cpu"][:3]:
+        name_str = _format_process_name(p['name'], whitelist)
+        top_c_strs.append(f"{name_str} ({p['cpu_percent']:.1f}%)")
+        
+    top_m_strs = []
+    for p in snap["top_mem"][:3]:
+        name_str = _format_process_name(p['name'], whitelist)
+        top_m_strs.append(f"{name_str} ({p['mem_percent']:.1f}%)")
+        
+    top_c = ", ".join(top_c_strs)
+    top_m = ", ".join(top_m_strs)
+    
+    return f"CPU:{cpu}, RAM:{ram}, GPU:{gpu} | TopCPU:[{top_c}] | TopRAM:[{top_m}]"
 
 
 def ask_llm(snapshot_text, model, temperature):
@@ -256,3 +309,36 @@ def ask_llm(snapshot_text, model, temperature):
     )
     
     return response.choices[0].message.content
+
+def ask_llm_triage(minimal_text, model):
+    """
+    1단계(Triage): 초소형 텍스트를 보고 문제가 있는지(1) 없는지(0)만 반환합니다.
+    """
+    system_prompt = (
+        "당신은 컴퓨터 자원 상태를 사전 진단하는 분류기(Triage)입니다. "
+        "주어진 자원 요약을 보고, 비정상적인 자원 낭비나 시스템 과부하(메모리 누수, CPU 과점유 등)가 의심되어 "
+        "정밀 분석 및 프로세스 종료 조치가 필요하다면 숫자 '1'을, 정상 범위라면 숫자 '0'만을 출력하십시오. "
+        "설명 없이 오직 0 또는 1만 출력하세요."
+    )
+    
+    response = client.chat.completions.create(
+        model=model,
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": minimal_text}
+        ],
+        temperature=0.1,
+        max_tokens=5
+    )
+    
+    result = response.choices[0].message.content.strip()
+    
+    # 예외 처리: AI가 실수로 문장을 뱉어냈을 경우에 대비한 방어 코드
+    if "1" in result:
+        return True
+    elif "0" in result:
+        return False
+    else:
+        # 0도 1도 아닌 이상한 대답을 했다면, 혹시 모를 위험에 대비해 
+        # 무조건 2단계 정밀 분석을 돌리도록 True(비정상)를 반환합니다. (Safe fallback)
+        return True

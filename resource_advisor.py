@@ -8,6 +8,7 @@ import pandas as pd
 try:
     import streamlit as st
     from resource_advisor_command import execute_action
+    from resource_core import load_whitelist, save_whitelist
 except ImportError as e:
     print(f"ImportError: {e}. Running patch to install missing modules...")
     subprocess.check_call([sys.executable, os.path.join(os.path.dirname(__file__), "patch.py")])
@@ -35,10 +36,29 @@ if not state:
     st.stop()
 
 # =========================================================
-# 화면 헤더
+# 화면 헤더 및 화이트리스트 관리 (사이드바)
 # =========================================================
 st.title("🖥️ 시스템 자원 AI 어드바이저")
 st.caption(f"마지막 갱신: {state.get('last_update_str', '알 수 없음')}")
+
+whitelist = load_whitelist()
+
+with st.sidebar:
+    st.header("🛡️ 예외 처리 (Whitelist)")
+    st.write("사용자가 의도적으로 실행 중인 무거운 프로세스 목록입니다. AI가 이 프로세스들은 종료를 제안하지 않습니다.")
+    
+    if whitelist:
+        for p_name in whitelist:
+            col_a, col_b = st.columns([3, 1])
+            with col_a:
+                st.code(p_name)
+            with col_b:
+                if st.button("❌", key=f"del_{p_name}"):
+                    whitelist.remove(p_name)
+                    save_whitelist(whitelist)
+                    st.rerun()
+    else:
+        st.info("등록된 예외 프로세스가 없습니다.")
 
 col1, col2 = st.columns([1, 10])
 with col1:
@@ -47,17 +67,41 @@ with col1:
 
 st.divider()
 
+def get_process_name_from_pid(pid_str, snap):
+    try:
+        pid = int(pid_str)
+        # top_cpu와 top_mem을 모두 뒤져서 이름을 찾습니다
+        for p in snap.get("top_cpu", []) + snap.get("top_mem", []):
+            if p["pid"] == pid:
+                return p["name"]
+    except:
+        pass
+    return None
+
 # =========================================================
 # AI 조치 승인 UI (가장 상단 배치)
 # =========================================================
 pending_actions = state.get("pending_actions", [])
+snap = state.get("snapshot", {})
+
 if pending_actions:
     st.error("⚠️ AI가 시스템 최적화를 위한 조치를 제안했습니다. 신중히 확인 후 승인해 주세요.")
     
     for act in pending_actions:
-        st.markdown(f"- **[{act['type']}]** `{act['target']}`")
+        p_name = get_process_name_from_pid(act['target'], snap) if act['type'] == 'KILL_PROCESS' else None
         
-    if st.button("🚨 제안된 조치 실행 승인", type="primary"):
+        col_act1, col_act2 = st.columns([3, 1])
+        with col_act1:
+            st.markdown(f"- **[{act['type']}]** `{act['target']}` " + (f"({p_name})" if p_name else ""))
+        with col_act2:
+            if p_name and p_name not in whitelist:
+                if st.button("✅ 의도된 작업입니다 (예외 등록)", key=f"ignore_{act['target']}"):
+                    whitelist.append(p_name)
+                    save_whitelist(whitelist)
+                    st.success(f"'{p_name}' 프로세스가 화이트리스트에 등록되었습니다!")
+                    st.rerun()
+        
+    if st.button("🚨 제안된 조치 실행 일괄 승인", type="primary"):
         for act in pending_actions:
             success, msg = execute_action(act["type"], act["target"])
             if success:

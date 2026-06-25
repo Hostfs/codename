@@ -12,7 +12,7 @@ from dotenv import load_dotenv
 # Missing modules handler
 try:
     from win11toast import toast
-    from resource_core import ResourceMonitor, snapshot_to_text, ask_llm, AVAILABLE_MODELS
+    from resource_core import ResourceMonitor, snapshot_to_text, get_minimal_snapshot_text, load_whitelist, ask_llm, ask_llm_triage, AVAILABLE_MODELS
     from resource_advisor_command import parse_actions
 except ImportError as e:
     print(f"ImportError: {e}. Running patch to install missing modules...")
@@ -99,25 +99,39 @@ def main():
             # 2. AI 분석 주기가 되었는지 확인
             now = time.time()
             if now - last_analysis_time >= ANALYSIS_INTERVAL_SEC:
-                print(f"[{datetime.now().strftime('%H:%M:%S')}] AI 분석을 시작합니다... (모델: {model})")
                 last_analysis_time = now
                 
-                text = snapshot_to_text(snapshot)
-                analysis_result = ask_llm(text, model, 0.3)
-                actions = parse_actions(analysis_result)
+                # whitelist 로드
+                whitelist = load_whitelist()
                 
-                # 조치가 이전과 동일한지 확인하여 중복 알림 방지
-                old_targets = {a['target'] for a in current_pending_actions}
-                new_targets = {a['target'] for a in actions}
+                # --- 1단계 (Triage) ---
+                minimal_text = get_minimal_snapshot_text(snapshot, whitelist)
+                print(f"[{datetime.now().strftime('%H:%M:%S')}] 1단계 진단 시작... (요약: {minimal_text})")
                 
-                current_analysis_result = analysis_result
-                current_pending_actions = actions
+                is_abnormal = ask_llm_triage(minimal_text, model)
                 
-                print(f"[{datetime.now().strftime('%H:%M:%S')}] AI 분석 완료.")
-                
-                if actions and new_targets != old_targets:
-                    print(f"  -> 새로운 조치 제안 발견! Toast 알림을 전송합니다.")
-                    threading.Thread(target=notify_user, args=(actions,), daemon=True).start()
+                if not is_abnormal:
+                    print(f"  -> [1단계 진단] 결과: 0 (정상) -> 세부 스캔 스킵")
+                else:
+                    print(f"  -> [1단계 진단] 결과: 1 (비정상) -> 2단계 정밀 분석 돌입!")
+                    
+                    # --- 2단계 (Full Scan) ---
+                    text = snapshot_to_text(snapshot, whitelist)
+                    analysis_result = ask_llm(text, model, 0.3)
+                    actions = parse_actions(analysis_result)
+                    
+                    # 조치가 이전과 동일한지 확인하여 중복 알림 방지
+                    old_targets = {a['target'] for a in current_pending_actions}
+                    new_targets = {a['target'] for a in actions}
+                    
+                    current_analysis_result = analysis_result
+                    current_pending_actions = actions
+                    
+                    print(f"[{datetime.now().strftime('%H:%M:%S')}] 2단계 정밀 분석 완료.")
+                    
+                    if actions and new_targets != old_targets:
+                        print(f"  -> 새로운 조치 제안 발견! Toast 알림을 전송합니다.")
+                        threading.Thread(target=notify_user, args=(actions,), daemon=True).start()
             
             # 3. 상태 저장 (Streamlit이 읽을 수 있게)
             save_state(snapshot, current_analysis_result, current_pending_actions)
