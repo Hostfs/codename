@@ -83,6 +83,7 @@ def _get_client():
     return _client
 
 
+<<<<<<< HEAD
 # ─────────────────────────────────────────────────────────────
 # 상수 / 설정
 # ─────────────────────────────────────────────────────────────
@@ -101,11 +102,38 @@ Markdown 문법(예: **굵게**, 코드펜스, 제목 마크업)은 사용하지
 """
 
 DEFAULT_ELECTRICITY_RATE_WON_PER_KWH = 150.0
+=======
+from resource_advisor_command import get_commands_prompt
+
+def get_dynamic_system_prompt():
+    return f"""당신은 컴퓨터 자원 최적화를 돕는 전문 AI 어드바이저입니다.
+사용자로부터 CPU, RAM, GPU, 디스크 사용량과 상위 프로세스 목록을 전달받습니다.
+다음 관점용으로 분석해서 한국어로 간결하게 답변하세요.
+
+1. 현재 낭비되고 있거나 비정상적으로 자원을 많이 쓰는 프로세스가 있는지
+2. RAM/디스크/GPU 중 여유가 부족하거나 과도하게 쓰는 자원이 있는지
+3. 더 효율적으로 자원을 쓰기 위한 구체적이고 실행 가능한 조치
+
+불필요한 군더더기 설명 없이 항목별로 bullet으로 작성하고, 심각도가 높은 항목을 먼저 언급하세요.
+
+[🔥 핵심 지시사항 - 능동적인 시스템 제어 태그 사용 필수]
+사용자에게 "작업 관리자에서 프로세스를 종료하세요" 와 같이 말로만 제안하지 마십시오.
+당신이 프로세스를 끄거나 파일을 삭제해야 한다고 판단했다면, 답변 텍스트의 **맨 마지막**에 반드시 다음 형식의 시스템 제어 태그를 직접 적으십시오. 
+시스템이 이 태그를 인식하여 즉각 사용자의 승인을 거쳐 조치할 것입니다.
+
+{get_commands_prompt()}
+
+[🚫 절대 금지 사항]
+1. `python.exe` 프로세스는 이 자원 어드바이저 앱 자체를 구동하는 핵심 프로세스이므로 **어떠한 경우에도 종료 태그를 발급하지 마십시오.** (자신을 끄게 됩니다)
+2. 시스템을 망가뜨릴 수 있는 핵심 프로세스(explorer.exe, svchost.exe 등)나 Windows 시스템 폴더 내 파일에 대해서는 제어 태그를 발급하지 마세요.
+"""
+
+>>>>>>> main
 
 AVAILABLE_MODELS = [
+    "openai/gpt-4o-mini",
     "google/gemini-2.5-flash-lite",
-    "google/gemini-2.0-flash-001",
-    "openai/gpt-4o-mini"
+    "google/gemini-2.0-flash-001"
 ]
 
 _NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
@@ -1171,7 +1199,10 @@ class ResourceMonitor:
         live_pids = set()
         rows = []
 
+        current_pid = os.getpid()
         for pid in psutil.pids():
+            if pid == current_pid:
+                continue
             live_pids.add(pid)
             item = cache.get(pid)
 
@@ -1512,10 +1543,38 @@ class ResourceMonitor:
             self._last_power_sample_time = now
 
 
+<<<<<<< HEAD
 # ─────────────────────────────────────────────────────────────
 # 스냅샷 → 텍스트 (AI 분석용)
 # ─────────────────────────────────────────────────────────────
 def snapshot_to_text(snap, electricity_rate_won_per_kwh=DEFAULT_ELECTRICITY_RATE_WON_PER_KWH):
+=======
+def load_whitelist(file_path="whitelist.json"):
+    if not os.path.exists(file_path):
+        return []
+    try:
+        with open(file_path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return []
+
+def save_whitelist(whitelist, file_path="whitelist.json"):
+    try:
+        with open(file_path, "w", encoding="utf-8") as f:
+            json.dump(whitelist, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"Failed to save whitelist: {e}")
+
+def _format_process_name(name, whitelist):
+    if name in whitelist:
+        return f"{name} (사용자 승인된 작업)"
+    return name
+
+def snapshot_to_text(snap, whitelist=None):
+    if whitelist is None:
+        whitelist = []
+        
+>>>>>>> main
     lines = [f"[측정 시각 {snap['timestamp']}]"]
 
     lines.append(f"CPU 사용률: {snap['cpu_percent']:.1f}%")
@@ -1545,11 +1604,13 @@ def snapshot_to_text(snap, electricity_rate_won_per_kwh=DEFAULT_ELECTRICITY_RATE
 
     lines.append("CPU 사용률 상위 프로세스:")
     for p in snap["top_cpu"]:
-        lines.append(f"  - {p['name']} (PID {p['pid']}): CPU {p['cpu_percent']:.1f}%, MEM {p['mem_percent']:.1f}%")
+        name_str = _format_process_name(p['name'], whitelist)
+        lines.append(f"  - {name_str} (PID {p['pid']}): CPU {p['cpu_percent']:.1f}%, MEM {p['mem_percent']:.1f}%")
 
     lines.append("메모리 사용률 상위 프로세스:")
     for p in snap["top_mem"]:
-        lines.append(f"  - {p['name']} (PID {p['pid']}): MEM {p['mem_percent']:.1f}%, CPU {p['cpu_percent']:.1f}%")
+        name_str = _format_process_name(p['name'], whitelist)
+        lines.append(f"  - {name_str} (PID {p['pid']}): MEM {p['mem_percent']:.1f}%, CPU {p['cpu_percent']:.1f}%")
 
     if snap.get("gpu_processes"):
         lines.append("GPU 사용량 상위 프로세스:")
@@ -1575,6 +1636,33 @@ def snapshot_to_text(snap, electricity_rate_won_per_kwh=DEFAULT_ELECTRICITY_RATE
 
     return "\n".join(lines)
 
+def get_minimal_snapshot_text(snap, whitelist=None):
+    if whitelist is None:
+        whitelist = []
+        
+    """1단계(Triage) 판단을 위한 초소형 스냅샷 텍스트를 생성합니다."""
+    # 시스템 총합
+    cpu = f"{snap['cpu_percent']:.1f}%"
+    ram = f"{snap['mem_percent']:.1f}%"
+    gpu_strs = [f"{g['util_percent']:.0f}%" for g in snap["gpus"]]
+    gpu = ", ".join(gpu_strs) if gpu_strs else "N/A"
+    
+    # 프로세스 상위 3개 (이름과 점유율만)
+    top_c_strs = []
+    for p in snap["top_cpu"][:3]:
+        name_str = _format_process_name(p['name'], whitelist)
+        top_c_strs.append(f"{name_str} ({p['cpu_percent']:.1f}%)")
+        
+    top_m_strs = []
+    for p in snap["top_mem"][:3]:
+        name_str = _format_process_name(p['name'], whitelist)
+        top_m_strs.append(f"{name_str} ({p['mem_percent']:.1f}%)")
+        
+    top_c = ", ".join(top_c_strs)
+    top_m = ", ".join(top_m_strs)
+    
+    return f"CPU:{cpu}, RAM:{ram}, GPU:{gpu} | TopCPU:[{top_c}] | TopRAM:[{top_m}]"
+
 
 # ─────────────────────────────────────────────────────────────
 # LLM 호출
@@ -1583,14 +1671,16 @@ def ask_llm(snapshot_text, model, temperature):
     response = _get_client().chat.completions.create(
         model=model,
         messages=[
-            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "system", "content": get_dynamic_system_prompt()},
             {"role": "user", "content": f"다음은 현재 시스템 자원 사용 현황입니다.\n\n{snapshot_text}"}
         ],
         temperature=temperature,
         max_tokens=1000
     )
+    
     return response.choices[0].message.content
 
+<<<<<<< HEAD
 
 def ask_llm_question(context_text, question, model, temperature):
     system_prompt = (
@@ -1614,3 +1704,37 @@ def ask_llm_question(context_text, question, model, temperature):
         max_tokens=1000
     )
     return response.choices[0].message.content
+=======
+def ask_llm_triage(minimal_text, model):
+    """
+    1단계(Triage): 초소형 텍스트를 보고 문제가 있는지(1) 없는지(0)만 반환합니다.
+    """
+    system_prompt = (
+        "당신은 컴퓨터 자원 상태를 사전 진단하는 분류기(Triage)입니다. "
+        "주어진 자원 요약을 보고, 비정상적인 자원 낭비나 시스템 과부하(메모리 누수, CPU 과점유 등)가 의심되어 "
+        "정밀 분석 및 프로세스 종료 조치가 필요하다면 숫자 '1'을, 정상 범위라면 숫자 '0'만을 출력하십시오. "
+        "설명 없이 오직 0 또는 1만 출력하세요."
+    )
+    
+    response = client.chat.completions.create(
+        model=model,
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": minimal_text}
+        ],
+        temperature=0.1,
+        max_tokens=5
+    )
+    
+    result = response.choices[0].message.content.strip()
+    
+    # 예외 처리: AI가 실수로 문장을 뱉어냈을 경우에 대비한 방어 코드
+    if "1" in result:
+        return True
+    elif "0" in result:
+        return False
+    else:
+        # 0도 1도 아닌 이상한 대답을 했다면, 혹시 모를 위험에 대비해 
+        # 무조건 2단계 정밀 분석을 돌리도록 True(비정상)를 반환합니다. (Safe fallback)
+        return True
+>>>>>>> main
