@@ -1,11 +1,21 @@
-import threading
-import time
-import tkinter as tk
-from tkinter import ttk
+import sys
+import os
+import subprocess
 
-import customtkinter as ctk
+try:
+    import threading
+    import time
+    import tkinter as tk
+    from tkinter import ttk
 
-from resource_core import OPENROUTER_API_KEY, AVAILABLE_MODELS, ResourceMonitor, snapshot_to_text, ask_llm
+    import customtkinter as ctk
+
+    from resource_core import OPENROUTER_API_KEY, AVAILABLE_MODELS, ResourceMonitor, snapshot_to_text, ask_llm
+except ImportError as e:
+    print(f"ImportError: {e}. Running patch to install missing modules...")
+    subprocess.check_call([sys.executable, os.path.join(os.path.dirname(__file__), "patch.py")])
+    print("Restarting application...")
+    os.execl(sys.executable, sys.executable, *sys.argv)
 
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")

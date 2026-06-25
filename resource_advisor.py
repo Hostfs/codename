@@ -1,8 +1,18 @@
-import time
+import sys
+import os
+import subprocess
 
-import streamlit as st
+try:
+    import time
 
-from resource_core import OPENROUTER_API_KEY, AVAILABLE_MODELS, ResourceMonitor, snapshot_to_text, ask_llm
+    import streamlit as st
+
+    from resource_core import OPENROUTER_API_KEY, AVAILABLE_MODELS, ResourceMonitor, snapshot_to_text, ask_llm
+except ImportError as e:
+    print(f"ImportError: {e}. Running patch to install missing modules...")
+    subprocess.check_call([sys.executable, os.path.join(os.path.dirname(__file__), "patch.py")])
+    print("Restarting application...")
+    os.execl(sys.executable, sys.executable, *sys.argv)
 
 # =========================================================
 # 1. 페이지 / 세션 상태 초기화
